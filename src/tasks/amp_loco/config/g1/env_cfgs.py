@@ -6,15 +6,20 @@ from src.assets.robots import (
   G1_ACTION_SCALE,
   get_g1_robot_cfg,
 )
+from src.assets.robots.unitree_g1.g1_constants import get_spec as _get_g1_spec
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
-from mjlab.tasks.velocity import mdp
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+from src.tasks.amp_loco import mdp
 from src.tasks.amp_loco.amp_env_cfg import make_amp_env_cfg
+from src.tasks.amp_loco.mdp.unified_command import RecoveryLocomotionCommandCfg
 
 def g1_amp_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Unitree G1 rough terrain velocity configuration."""
@@ -200,4 +205,214 @@ def g1_amp_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.lin_vel_y = (-1.0, 1.0)
     twist_cmd.ranges.ang_vel_z = (-3.14 / 2, 3.14 / 2)
 
+  return cfg
+
+
+def g1_amp_flat_recovery_control_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Flat AMP baseline with current Recovery data and reset sampling."""
+  cfg = g1_amp_flat_env_cfg(play=play)
+  if not play:
+    cfg.scene.num_envs = 4096
+
+  recovery_dir = os.path.abspath(os.path.join(
+    os.path.dirname(__file__),
+    "..", "..", "..", "..", "assets", "motions", "g1",
+    "amp_unified_v1", "Recovery",
+  ))
+  cfg.events["init_motion_loader"].params["recovery_dir"] = recovery_dir
+  cfg.events["reset_from_motion"].params["recovery_sampling_mode"] = "low_non_upright"
+  return cfg
+
+
+def _get_g1_spec_with_head_site():
+  """Return the stock G1 spec with the head site used by SMP success logic."""
+  spec = _get_g1_spec()
+  torso = spec.body("torso_link")
+  if not any(site.name == "head" for site in torso.sites):
+    torso.add_site(name="head", pos=(0.0, 0.0, 0.43))
+  return spec
+
+
+def g1_amp_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the flat G1 AMP get-up task with random Recovery-frame resets."""
+  cfg = g1_amp_flat_env_cfg(play=play)
+
+  # The get-up task uses a head site for the same stable-standing condition as SMP.
+  cfg.scene.entities["robot"].spec_fn = _get_g1_spec_with_head_site
+
+  # Recovery data is both the reset pool and the expert motion prior.
+  motion_dir = os.path.abspath(
+    os.path.join(
+      os.path.dirname(__file__),
+      "..", "..", "..", "..", "assets", "motions", "g1", "amp", "Recovery",
+    )
+  )
+  cfg.events["init_motion_loader"].params.update(
+    motion_dir=motion_dir,
+    recovery_dir=None,
+    delay_reset_env_ratio=0.0,
+    max_delay_steps=0,
+  )
+  cfg.events["reset_from_motion"].params["motion_dir"] = motion_dir
+  cfg.events["reset_from_motion"].params.update(
+    pose_mode="random",
+    frame_index=None,
+    default_pose_reset_ratio=0.0 if play else 0.10,
+    pose_filters={
+      "max_root_height": 0.30,
+      "min_abs_forward_z": 0.75,
+      "max_root_linear_speed": 0.50,
+      "max_root_angular_speed": 1.00,
+    },
+  )
+  cfg.events["reset_stand_counter"] = EventTermCfg(
+    func=mdp.reset_getup_stand_counter,
+    mode="reset",
+  )
+
+  # Get-up has no velocity command. Keep mild startup domain randomization, but
+  # disable locomotion pushes and terrain resampling for this first baseline.
+  cfg.commands = {}
+  cfg.observations["actor"].terms.pop("command", None)
+  cfg.observations["critic"].terms.pop("command", None)
+  cfg.events.pop("push_robot", None)
+  cfg.events.pop("randomize_terrain", None)
+  cfg.curriculum = {}
+
+  # Preserve AMP's height objective and regularization terms without delay masks.
+  cfg.rewards = {
+    "amp_getup_root_height": RewardTermCfg(
+      func=mdp.amp_getup_root_height,
+      weight=3.5,
+      params={"std": 0.3},
+    ),
+    "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-2.5e-7),
+    "joint_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-10.0),
+    "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.01),
+  }
+
+  # Both success and the 5-second episode limit are truncations, so the value
+  # function bootstraps from the final standing or timeout state.
+  cfg.terminations = {
+    "stood_up": TerminationTermCfg(
+      func=mdp.stood_up,
+      time_out=True,
+      params={"head_height": 1.2, "max_speed": 0.5, "hold_steps": 25},
+    ),
+    "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+  }
+  cfg.episode_length_s = 5.0
+
+  cfg.metrics = {
+    "getup/root_height": MetricsTermCfg(func=mdp.getup_root_height),
+    "getup/head_height": MetricsTermCfg(func=mdp.getup_head_height),
+    "getup/stood_up_episodes": MetricsTermCfg(
+      func=mdp.getup_termination_event,
+      params={"term_name": "stood_up"},
+    ),
+    "getup/time_out_episodes": MetricsTermCfg(
+      func=mdp.getup_termination_event,
+      params={"term_name": "time_out"},
+    ),
+  }
+
+  # The flat play config normally uses a very long horizon. Keep the training
+  # timeout in play mode so success/timeout behavior can be inspected directly.
+  if play:
+    cfg.episode_length_s = 5.0
+
+  return cfg
+
+
+def g1_amp_recovery_loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """First unified recovery plus locomotion task, trained on flat ground."""
+  cfg = g1_amp_flat_env_cfg(play=play)
+  # A single training environment rounds the fixed 6:1:3 cohorts to Recovery
+  # only. Match the environment count used by this task's existing runs.
+  if not play:
+    cfg.scene.num_envs = 4096
+  cfg.scene.entities["robot"].spec_fn = _get_g1_spec_with_head_site
+  asset_root = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_v1"
+  ))
+  walk_dir = os.path.join(asset_root, "WalkandRun")
+  recovery_dir = os.path.join(asset_root, "Recovery")
+  cfg.events["init_motion_loader"].params.update(
+    motion_dir=walk_dir,
+    recovery_dir=recovery_dir,
+    delay_reset_env_ratio=0.6,
+    max_delay_steps=250,
+    unified_recovery_ratio=0.6,
+    unified_stand_ratio=0.1,
+    unified_play_phase="random",
+  )
+  reset = cfg.events["reset_from_motion"]
+  reset.func = mdp.reset_unified_recovery_locomotion
+  reset.params.update(motion_dir=walk_dir, play_phase="random")
+  reset.params.pop("pose_mode", None)
+  reset.params.pop("frame_index", None)
+  reset.params.pop("pose_filters", None)
+  reset.params.pop("default_pose_reset_ratio", None)
+
+  old = cfg.commands["twist"]
+  cfg.commands["twist"] = RecoveryLocomotionCommandCfg(
+    entity_name=old.entity_name,
+    resampling_time_range=old.resampling_time_range,
+    rel_standing_envs=old.rel_standing_envs,
+    rel_heading_envs=old.rel_heading_envs,
+    heading_command=old.heading_command,
+    heading_control_stiffness=old.heading_control_stiffness,
+    debug_vis=bool(play),
+    ranges=old.ranges,
+  )
+
+  # Keep the original locomotion perturbation for WalkandRun and static
+  # environments. Recovery environments receive it only after returning to
+  # stable, commanded locomotion so those falls become get-up training samples.
+  if play:
+    cfg.events.pop("push_robot", None)
+  else:
+    base_push_cfg = cfg.events["push_robot"]
+    cfg.events["push_robot"] = EventTermCfg(
+      func=mdp.push_unified_robot,
+      mode="interval",
+      interval_range_s=base_push_cfg.interval_range_s,
+      params={
+        **base_push_cfg.params,
+        "recovery_push_probability": 0.25,
+        "recovery_min_walk_s": 1.0,
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    )
+  # This inherited term only rewards delayed-reset environments; unified
+  # recovery uses the unmasked get-up height objective below.
+  cfg.rewards.pop("track_root_height", None)
+  cfg.rewards["amp_getup_root_height"] = RewardTermCfg(
+    # Keep the get-up objective at the same strength as the standalone task.
+    func=mdp.amp_getup_root_height, weight=3.5, params={"std": 0.3}
+  )
+  cfg.rewards["unified_stand_still"] = RewardTermCfg(
+    func=mdp.unified_stand_still, weight=1.0, params={"std": 0.25}
+  )
+  cfg.rewards["unified_stand_foot_slip"] = RewardTermCfg(
+    func=mdp.unified_stand_foot_slip,
+    weight=-0.25,
+    params={"sensor_name": "feet_ground_contact", "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))},
+  )
+  cfg.metrics["unified_recovery_phase_fraction"] = MetricsTermCfg(
+    func=mdp.UnifiedRewardEpisodeLogger
+  )
+  cfg.terminations = {
+    "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+    "locomotion_fall": TerminationTermCfg(func=mdp.unified_locomotion_fall),
+    "recovery_timeout": TerminationTermCfg(
+      func=mdp.unified_recovery_timeout, time_out=True, params={"max_recovery_s": 5.0}
+    ),
+  }
+  cfg.episode_length_s = 20.0
+  cfg.curriculum = {}
+  if play:
+    cfg.episode_length_s = 20.0
   return cfg

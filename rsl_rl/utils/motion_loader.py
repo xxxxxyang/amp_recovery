@@ -43,7 +43,7 @@ class AMPLoader:
             # 文件夹的情况：递归查找所有子目录下的 .npz 文件
             motion_names = []
             motion_files = []
-            for root, _dirs, files in os.walk(motion_file):
+            for root, _dirs, files in os.walk(motion_file, followlinks=True):
                 for filename in sorted(files):
                     if filename.endswith('.npz'):
                         motion_names.append(os.path.splitext(filename)[0])
@@ -56,11 +56,13 @@ class AMPLoader:
         
         # 存储所有motion的数据列表
         self.motion_names = motion_names
+        self.motion_sources = [name.split("_", 1)[0] for name in motion_names]
         self._body_pos_b_list = []
         self._body_quat_b_list = []
         self._body_ori_b_list = []
         self._body_lin_vel_b_list = []
         self._body_ang_vel_b_list = []
+        self.motion_categories: list[str] = []
         
         # 处理每个motion文件
         for motion_idx, (motion_name, motion_path) in enumerate(zip(motion_names, motion_files)):
@@ -134,6 +136,10 @@ class AMPLoader:
             self._body_ori_b_list.append(_body_ori_b)
             self._body_lin_vel_b_list.append(_body_lin_vel_b)
             self._body_ang_vel_b_list.append(_body_ang_vel_b)
+            # Preserve the top-level category for curated datasets laid out as
+            # <root>/Recovery/*.npz and <root>/WalkandRun/*.npz.
+            rel_parts = os.path.relpath(motion_path, motion_file).split(os.sep) if os.path.isdir(motion_file) else []
+            self.motion_categories.append(rel_parts[0] if len(rel_parts) > 1 else "")
         
         # 为了向后兼容，使用第一个motion的数据作为默认值
         self.time_step_total = self._body_pos_b_list[0].shape[0]
@@ -150,7 +156,18 @@ class AMPLoader:
         obs_dim = (3 + 6 + 3 + 3) * num_bodies  # pos, mat[:,:2], lin_vel, ang_vel
         return obs_dim
 
-    def feed_forward_generator(self, num_mini_batch, mini_batch_size):
+    def feed_forward_generator(
+        self,
+        num_mini_batch,
+        mini_batch_size,
+        category_ratio: dict[str, float] | None = None,
+        source_ratio: dict[str, dict[str, float]] | None = None,
+    ):
+        if category_ratio or source_ratio:
+            yield from self._category_feed_forward_generator(
+                num_mini_batch, mini_batch_size, category_ratio, source_ratio
+            )
+            return
         num_motions = len(self._body_pos_b_list)
         
         for batch_idx in range(num_mini_batch):
@@ -198,3 +215,99 @@ class AMPLoader:
                 dim=-1,
             )  # (mini_batch_size, obs_dim)
             yield s, s_next
+
+    def _category_feed_forward_generator(
+        self, num_batches, batch_size, category_ratio, source_ratio=None
+    ):
+        """Sample exact category/source quotas, then sample clips and frame pairs."""
+        source_ratio = source_ratio or {}
+        category_ratio = category_ratio or {}
+        categories = sorted(set(category_ratio) | set(source_ratio))
+        category_weights = {
+            name: category_ratio.get(name, 1.0) for name in categories
+        }
+        pools = {
+            category: [i for i, value in enumerate(self.motion_categories) if value == category]
+            for category in categories
+        }
+        missing = [name for name, indices in pools.items() if not indices]
+        if missing:
+            raise ValueError(f"AMP category folders have no motions: {missing}")
+        weights = torch.tensor([category_weights[name] for name in categories], dtype=torch.float64)
+        if (weights < 0).any() or weights.sum() <= 0:
+            raise ValueError(f"Invalid AMP category ratios: {category_weights}")
+        weights /= weights.sum()
+        quotas = torch.floor(weights * batch_size).long()
+        for idx in torch.argsort(weights * batch_size - quotas, descending=True)[: batch_size - int(quotas.sum())]:
+            quotas[idx] += 1
+
+        source_pools: dict[str, dict[str, list[int]]] = {}
+        source_quotas: dict[str, torch.Tensor] = {}
+        for category in categories:
+            configured = source_ratio.get(category)
+            if not configured:
+                continue
+            category_pool = pools[category]
+            sources = sorted(configured)
+            source_pools[category] = {
+                source: [i for i in category_pool if self.motion_sources[i] == source]
+                for source in sources
+            }
+            missing_sources = [source for source, ids in source_pools[category].items() if not ids]
+            if missing_sources:
+                raise ValueError(
+                    f"AMP source folders/clips missing in {category}: {missing_sources}"
+                )
+            source_weights = torch.tensor(
+                [configured[source] for source in sources], dtype=torch.float64
+            )
+            if (source_weights < 0).any() or source_weights.sum() <= 0:
+                raise ValueError(f"Invalid AMP source ratios for {category}: {configured}")
+            source_weights /= source_weights.sum()
+            category_count = int(quotas[categories.index(category)])
+            weighted_source_counts = source_weights * category_count
+            source_quota = torch.floor(weighted_source_counts).long()
+            remainder = category_count - int(source_quota.sum())
+            for idx in torch.argsort(weighted_source_counts - source_quota, descending=True)[:remainder]:
+                source_quota[idx] += 1
+            source_quotas[category] = source_quota
+
+        def sample_pool(motion_pool: list[int], count: int, observations: list, next_observations: list):
+            if count <= 0:
+                return
+            selected = torch.randint(
+                len(motion_pool), (count,), device=self._body_pos_b_list[0].device
+            )
+            for local_clip in selected.unique().tolist():
+                selected_count = int((selected == local_clip).sum())
+                motion_idx = motion_pool[local_clip]
+                body_pos = self._body_pos_b_list[motion_idx]
+                body_ori = self._body_ori_b_list[motion_idx]
+                body_lin = self._body_lin_vel_b_list[motion_idx]
+                body_ang = self._body_ang_vel_b_list[motion_idx]
+                last = body_pos.shape[0] - 1
+                if last < 1:
+                    raise ValueError(f"AMP motion {self.motion_names[motion_idx]} has fewer than 2 frames")
+                frame = torch.randint(last, (selected_count,), device=body_pos.device)
+                next_frame = frame + 1
+                observations.append(torch.cat((body_pos[frame].flatten(1), body_ori[frame].flatten(1), body_lin[frame].flatten(1), body_ang[frame].flatten(1)), dim=-1))
+                next_observations.append(torch.cat((body_pos[next_frame].flatten(1), body_ori[next_frame].flatten(1), body_lin[next_frame].flatten(1), body_ang[next_frame].flatten(1)), dim=-1))
+
+        for _ in range(num_batches):
+            observations, next_observations = [], []
+            for category_idx, category in enumerate(categories):
+                count = int(quotas[category_idx])
+                if count == 0:
+                    continue
+                if category in source_pools:
+                    for source_idx, source in enumerate(sorted(source_ratio[category])):
+                        source_count = int(source_quotas[category][source_idx])
+                        sample_pool(
+                            source_pools[category][source], source_count,
+                            observations, next_observations,
+                        )
+                else:
+                    sample_pool(pools[category], count, observations, next_observations)
+            s, s_next = torch.cat(observations), torch.cat(next_observations)
+            order = torch.randperm(batch_size, device=s.device)
+            yield s[order], s_next[order]

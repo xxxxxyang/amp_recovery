@@ -29,6 +29,8 @@ class RslRlAmpRunnerCfg(RslRlOnPolicyRunnerCfg):
   min_normalized_std: List[float] = field(default_factory=lambda: [0.05] * 29)
   amp_body_names: tuple = ()
   amp_anchor_name: str = ""
+  amp_category_ratio: dict[str, float] | None = None
+  amp_source_ratio: dict[str, dict[str, float]] | None = None
 
 
 def g1_amp_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
@@ -93,3 +95,45 @@ def g1_amp_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
     ),
     amp_anchor_name="torso_link",
   )
+
+
+def g1_amp_getup_runner_cfg() -> RslRlAmpRunnerCfg:
+  """Runner configuration for G1 get-up with Recovery-only AMP data."""
+  cfg = g1_amp_ppo_runner_cfg()
+  recovery_dir = os.path.join(_MOTION_DATA_DIR, "Recovery")
+  cfg.experiment_name = "g1_amp_getup"
+  cfg.logger = "wandb"
+  cfg.wandb_project = "amp-getup"
+  cfg.amp_motion_files = os.path.normpath(recovery_dir)
+  return cfg
+
+
+def g1_amp_recovery_loco_runner_cfg() -> RslRlAmpRunnerCfg:
+  """W&B configuration and exact expert quotas for unified v1."""
+  cfg = g1_amp_ppo_runner_cfg()
+  cfg.experiment_name = "g1_amp_recovery_loco_v1"
+  cfg.logger = "wandb"
+  cfg.wandb_project = "amp-recovery-locomotion"
+  cfg.amp_motion_files = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_v1"
+  ))
+  cfg.amp_category_ratio = {"Recovery": 0.6, "WalkandRun": 0.4}
+  cfg.amp_source_ratio = {"Recovery": {"subject1": 0.3, "subject2": 0.7}}
+  return cfg
+
+
+def g1_amp_flat_recovery_control_runner_cfg() -> RslRlAmpRunnerCfg:
+  """Original Flat AMP settings with multi-clip Recovery quotas."""
+  cfg = g1_amp_ppo_runner_cfg()
+  cfg.experiment_name = "g1_amp_flat_recovery_control"
+  cfg.logger = "wandb"
+  cfg.wandb_project = "amp-recovery-locomotion"
+  cfg.amp_motion_files = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions",
+    "g1", "amp_flat_recovery_control",
+  ))
+  # Preserve the original four-minibatch effective mix: one Recovery and
+  # three WalkandRun minibatches. Balance sources only within Recovery.
+  cfg.amp_category_ratio = {"Recovery": 0.25, "WalkandRun": 0.75}
+  cfg.amp_source_ratio = {"Recovery": {"subject1": 0.3, "subject2": 0.7}}
+  return cfg

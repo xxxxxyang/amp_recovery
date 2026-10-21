@@ -99,6 +99,10 @@ class AmpOnPolicyRunner:
         _migrate_train_cfg(train_cfg)
         self.cfg = train_cfg
         self.alg_cfg = train_cfg["algorithm"]
+        if train_cfg.get("amp_category_ratio"):
+            self.alg_cfg["amp_category_ratio"] = train_cfg["amp_category_ratio"]
+        if train_cfg.get("amp_source_ratio"):
+            self.alg_cfg["amp_source_ratio"] = train_cfg["amp_source_ratio"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
@@ -340,14 +344,21 @@ class AmpOnPolicyRunner:
                     else:
                         privileged_obs = obs
 
-                    # Account for terminal state transitions
-                    # mjlab auto-resets before computing obs, so post-reset amp obs
-                    # belong to the new episode. Use pre-step amp_obs as the best
-                    # approximation of the terminal amp observation.
+                    # Account for terminal state transitions. Prefer a true
+                    # pre-reset AMP observation when the environment exposes it.
                     next_amp_obs_with_term = torch.clone(next_amp_obs)
                     reset_env_ids = (dones > 0).nonzero(as_tuple=False).flatten()
                     if len(reset_env_ids) > 0:
-                        next_amp_obs_with_term[reset_env_ids] = amp_obs[reset_env_ids]
+                        terminal_observations = infos.get("terminal_observations", {})
+                        terminal_env_ids = terminal_observations.get("env_ids")
+                        terminal_amp_obs = terminal_observations.get("amp")
+                        if terminal_env_ids is not None and terminal_amp_obs is not None:
+                            terminal_env_ids = terminal_env_ids.to(self.device)
+                            next_amp_obs_with_term[terminal_env_ids] = terminal_amp_obs.to(self.device)
+                        else:
+                            # Compatibility fallback for vector envs that do not
+                            # expose pre-reset terminal observations.
+                            next_amp_obs_with_term[reset_env_ids] = amp_obs[reset_env_ids]
 
                     rewards = self.alg.discriminator.predict_amp_reward(
                         amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer

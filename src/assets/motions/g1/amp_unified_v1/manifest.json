@@ -1,0 +1,105 @@
+{
+  "dataset": "amp_unified_v1",
+  "user_annotated_ranges_used_as_is": true,
+  "segments": [
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 491,
+      "end_line_inclusive": 575,
+      "label": "subject1_01_supine_side_getup",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_01_supine_side_getup.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 698,
+      "end_line_inclusive": 806,
+      "label": "subject1_02_prone_side_getup",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_02_prone_side_getup.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 2080,
+      "end_line_inclusive": 2212,
+      "label": "subject1_03_supine_side_getup",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_03_supine_side_getup.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 2630,
+      "end_line_inclusive": 2745,
+      "label": "subject1_04_supine_left_getup_walk",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_04_supine_left_getup_walk.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 2905,
+      "end_line_inclusive": 3038,
+      "label": "subject1_05_supine_right_getup_walk",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_05_supine_right_getup_walk.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 3230,
+      "end_line_inclusive": 3350,
+      "label": "subject1_06_supine_straight_getup_walk",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_06_supine_straight_getup_walk.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 4290,
+      "end_line_inclusive": 4400,
+      "label": "subject1_07_supine_straight_getup_run",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_07_supine_straight_getup_run.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp1_subject1.csv",
+      "start_line_inclusive": 4553,
+      "end_line_inclusive": 4660,
+      "label": "subject1_08_prone_straight_getup_run",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject1_08_prone_straight_getup_run.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp2_subject2.csv",
+      "start_line_inclusive": 350,
+      "end_line_inclusive": 580,
+      "label": "subject2_01_supine_straight_getup_high_quality",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject2_01_supine_straight_getup_high_quality.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp2_subject2.csv",
+      "start_line_inclusive": 800,
+      "end_line_inclusive": 1042,
+      "label": "subject2_02_prone_straight_getup_high_quality",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject2_02_prone_straight_getup_high_quality.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    },
+    {
+      "source_csv": "/home/xyang/Downloads/fallAndGetUp2_subject2.csv",
+      "start_line_inclusive": 1200,
+      "end_line_inclusive": 1380,
+      "label": "subject2_03_supine_side_getup_high_quality",
+      "output_npz": "src/assets/motions/g1/amp_unified_v1/Recovery/subject2_03_supine_side_getup_high_quality.npz",
+      "input_fps": 30,
+      "output_fps": 50
+    }
+  ]
+}

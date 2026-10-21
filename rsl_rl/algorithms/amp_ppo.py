@@ -66,6 +66,8 @@ class AMPPPO:
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
         share_cnn_encoders=False,
+        amp_category_ratio: dict[str, float] | None = None,
+        amp_source_ratio: dict[str, dict[str, float]] | None = None,
     ):
         # device-related parameters
         self.device = device
@@ -118,6 +120,8 @@ class AMPPPO:
         self.amp_transition = RolloutStorage.Transition()
         self.amp_storage = ReplayBuffer(discriminator.input_dim // 2, amp_replay_buffer_size, device)
         self.amp_data = amp_data
+        self.amp_category_ratio = amp_category_ratio
+        self.amp_source_ratio = amp_source_ratio
         self.amp_normalizer = amp_normalizer
 
         # PPO components
@@ -256,6 +260,8 @@ class AMPPPO:
         amp_expert_generator = self.amp_data.feed_forward_generator(
             self.num_learning_epochs * self.num_mini_batches,
             self.storage.num_envs * self.storage.num_transitions_per_env // self.num_mini_batches,
+            category_ratio=self.amp_category_ratio,
+            source_ratio=self.amp_source_ratio,
         )
 
         # iterate over batches

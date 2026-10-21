@@ -34,6 +34,17 @@ class PlayConfig:
   video_width: int | None = None
   camera: int | str | None = None
   viewer: Literal["auto", "native", "viser"] = "auto"
+  """Viewer backend. Viser provides interactive task-specific reset controls."""
+  reset_pose: Literal[
+    "random", "supine", "prone", "default_supine", "default_prone", "frame"
+  ] = "random"
+  """Getup reset source: reference frames or a synthetic default-pose lie."""
+  reset_phase: Literal["random", "recovery", "stand", "walk"] = "random"
+  """Unified recovery-locomotion reset phase for targeted evaluation."""
+  reset_frame: int | None = None
+  """Flattened reference frame index, required with reset_pose='frame'."""
+  start_paused: bool = False
+  """Start Viser paused so the chosen initial pose can be inspected."""
   no_terminations: bool = False
   export_onnx: bool = True
   """Export loaded trained policy to ONNX under current run directory/export."""
@@ -141,6 +152,33 @@ def run_play(task_id: str, cfg: PlayConfig):
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
 
+  reset_event_cfg = env_cfg.events.get("reset_from_motion")
+  supports_getup_reset_pose = (
+    reset_event_cfg is not None
+    and "pose_mode" in reset_event_cfg.params
+  )
+  supports_unified_reset_phase = (
+    reset_event_cfg is not None and "play_phase" in reset_event_cfg.params
+  )
+  if cfg.reset_pose != "random" and not supports_getup_reset_pose:
+    raise ValueError("--reset-pose is only available for tasks with reference-pose resets.")
+  if cfg.reset_phase != "random" and not supports_unified_reset_phase:
+    raise ValueError("--reset-phase is only available for unified recovery-locomotion tasks.")
+  if cfg.reset_pose == "frame" and cfg.reset_frame is None:
+    raise ValueError("--reset-pose frame requires --reset-frame <index>.")
+  if cfg.reset_pose != "frame" and cfg.reset_frame is not None:
+    raise ValueError("--reset-frame can only be used with --reset-pose frame.")
+  if supports_getup_reset_pose:
+    reset_event_cfg.params["pose_mode"] = cfg.reset_pose
+    reset_event_cfg.params["frame_index"] = cfg.reset_frame
+  if supports_unified_reset_phase:
+    reset_event_cfg.params["play_phase"] = cfg.reset_phase
+    if cfg.reset_phase != "random":
+      loader_event_cfg = env_cfg.events.get("init_motion_loader")
+      if loader_event_cfg is not None and "unified_play_phase" in loader_event_cfg.params:
+        # Keep the delayed-reset mask aligned with the forced play reset phase.
+        loader_event_cfg.params["unified_play_phase"] = cfg.reset_phase
+
   DUMMY_MODE = cfg.agent in {"zero", "random"}
   TRAINED_MODE = not DUMMY_MODE
 
@@ -215,6 +253,22 @@ def run_play(task_id: str, cfg: PlayConfig):
     )
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
 
+  if supports_getup_reset_pose:
+    from src.tasks.amp_loco.mdp.events import MotionResetManager
+
+    reset_params = reset_event_cfg.params
+    motion_dir = reset_params["motion_dir"]
+    frame_count = MotionResetManager.get().frame_count(motion_dir)
+    if cfg.reset_pose == "frame" and not 0 <= cfg.reset_frame < frame_count:
+      raise ValueError(
+        f"--reset-frame must be in [0, {frame_count - 1}], got {cfg.reset_frame}."
+      )
+    env._amp_getup_reset_pose_mode = cfg.reset_pose
+    env._amp_getup_reset_frame = cfg.reset_frame
+    env._amp_getup_reset_frame_count = frame_count
+  if supports_unified_reset_phase:
+    env._amp_unified_play_phase = cfg.reset_phase
+
   if TRAINED_MODE and cfg.video:
     print("[INFO] Recording videos during play")
     assert log_dir is not None  # log_dir is set in TRAINED_MODE block
@@ -275,7 +329,24 @@ def run_play(task_id: str, cfg: PlayConfig):
   if resolved_viewer == "native":
     NativeMujocoViewer(env, policy).run()
   elif resolved_viewer == "viser":
-    ViserPlayViewer(env, policy).run()
+    if supports_unified_reset_phase:
+      from src.tasks.amp_loco.recovery_loco_play_viewer import (
+        RecoveryLocoViserPlayViewer,
+      )
+
+      viewer = RecoveryLocoViserPlayViewer(env, policy)
+      if cfg.start_paused:
+        viewer.pause()
+      viewer.run()
+    elif supports_getup_reset_pose:
+      from src.tasks.amp_loco.getup_play_viewer import GetupViserPlayViewer
+
+      viewer = GetupViserPlayViewer(env, policy)
+      if cfg.start_paused:
+        viewer.pause()
+      viewer.run()
+    else:
+      ViserPlayViewer(env, policy).run()
   else:
     raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
 
