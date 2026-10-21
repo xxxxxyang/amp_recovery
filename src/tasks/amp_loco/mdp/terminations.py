@@ -94,6 +94,31 @@ def unified_locomotion_fall(env: ManagerBasedRlEnv) -> torch.Tensor:
     return cmd.fallen_mask()
 
 
+def _unified_normal_group(env: ManagerBasedRlEnv) -> torch.Tensor:
+    groups = getattr(env, "_amp_unified_reset_groups", None)
+    if groups is None:
+        raise RuntimeError("Unified termination requires initialized reset groups")
+    return groups != 0
+
+
+def unified_bad_orientation(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Immediately terminate standing and WalkAndRun environments on a tilt fall."""
+    cmd = env.command_manager.get_term("twist")
+    return _unified_normal_group(env) & cmd.fall_causes()[0]
+
+
+def unified_bad_base_height(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Immediately terminate standing and WalkAndRun environments on a height fall."""
+    cmd = env.command_manager.get_term("twist")
+    return _unified_normal_group(env) & cmd.fall_causes()[1]
+
+
+def unified_recovery_fall(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Keep the original combined fall predicate for delayed Recovery environments."""
+    cmd = env.command_manager.get_term("twist")
+    return ~_unified_normal_group(env) & cmd.fallen_mask()
+
+
 def unified_recovery_timeout(env: ManagerBasedRlEnv, max_recovery_s: float = 5.0) -> torch.Tensor:
     """End an episode if one recovery attempt exceeds its five-second budget."""
     cmd = env.command_manager.get_term("twist")

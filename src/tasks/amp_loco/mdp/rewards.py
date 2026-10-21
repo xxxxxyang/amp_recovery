@@ -229,6 +229,24 @@ def default_pose_stand(
   return reward * (standing_command & not_fallen).float()
 
 
+def unified_stand_pose_active(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Limit the default-pose target to explicit standing phases."""
+  cmd = env.command_manager.get_term("twist")
+  standing_phase = (cmd.phase == cmd.SETTLE) | (cmd.phase == cmd.HOLD) | (cmd.phase == cmd.STAND)
+  zero_command = torch.linalg.vector_norm(cmd.vel_command_b, dim=-1) < 0.05
+  return standing_phase & zero_command & ~cmd.fallen_mask()
+
+
+def unified_default_pose_stand(
+  env: ManagerBasedRlEnv,
+  std: float = 0.3,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward the default joint pose during stable, commanded standing."""
+  pose_reward = default_pose_stand(env, std=std, asset_cfg=asset_cfg)
+  return pose_reward * unified_stand_pose_active(env).float()
+
+
 def unified_stand_still(env: ManagerBasedRlEnv, std: float = 0.25) -> torch.Tensor:
   """Reward low root motion while holding the zero-command standing phase."""
   cmd = env.command_manager.get_term("twist")

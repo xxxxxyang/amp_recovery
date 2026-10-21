@@ -335,7 +335,7 @@ def g1_amp_recovery_loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scene.num_envs = 4096
   cfg.scene.entities["robot"].spec_fn = _get_g1_spec_with_head_site
   asset_root = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_v1"
+    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_csv2"
   ))
   walk_dir = os.path.join(asset_root, "WalkandRun")
   recovery_dir = os.path.join(asset_root, "Recovery")
@@ -366,6 +366,10 @@ def g1_amp_recovery_loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     heading_control_stiffness=old.heading_control_stiffness,
     debug_vis=bool(play),
     ranges=old.ranges,
+    walkandrun_velocity_stages=None if play else (
+      {"step": 0, "lin_vel_x": (-0.5, 1.0), "lin_vel_y": (-0.5, 0.5), "ang_vel_z": (-1.0, 1.0)},
+      {"step": 5000 * 24, "lin_vel_x": (-1.0, 2.0), "lin_vel_y": (-1.0, 1.0), "ang_vel_z": (-1.0, 1.0)},
+    ),
   )
 
   # Keep the original locomotion perturbation for WalkandRun and static
@@ -396,6 +400,11 @@ def g1_amp_recovery_loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["unified_stand_still"] = RewardTermCfg(
     func=mdp.unified_stand_still, weight=1.0, params={"std": 0.25}
   )
+  cfg.rewards["default_pose_stand"] = RewardTermCfg(
+    func=mdp.unified_default_pose_stand,
+    weight=0.5,
+    params={"std": 0.3, "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+  )
   cfg.rewards["unified_stand_foot_slip"] = RewardTermCfg(
     func=mdp.unified_stand_foot_slip,
     weight=-0.25,
@@ -406,7 +415,9 @@ def g1_amp_recovery_loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.terminations = {
     "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
-    "locomotion_fall": TerminationTermCfg(func=mdp.unified_locomotion_fall),
+    "bad_orientation": TerminationTermCfg(func=mdp.unified_bad_orientation),
+    "bad_base_height": TerminationTermCfg(func=mdp.unified_bad_base_height),
+    "recovery_fall": TerminationTermCfg(func=mdp.unified_recovery_fall),
     "recovery_timeout": TerminationTermCfg(
       func=mdp.unified_recovery_timeout, time_out=True, params={"max_recovery_s": 5.0}
     ),

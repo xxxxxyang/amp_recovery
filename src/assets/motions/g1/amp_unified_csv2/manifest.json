@@ -1,0 +1,10 @@
+{
+  "dataset": "amp_unified_csv2",
+  "based_on": "amp_unified_v1",
+  "recovery_clips": [
+    "subject2_01_supine_straight_getup_high_quality.npz",
+    "subject2_02_prone_straight_getup_high_quality.npz",
+    "subject2_03_supine_side_getup_high_quality.npz"
+  ],
+  "walkandrun": "../amp/WalkandRun"
+}

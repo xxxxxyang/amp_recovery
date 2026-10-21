@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import torch
 
+from src.tasks.velocity.mdp.curriculums import VelocityStage
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityCommand, UniformVelocityCommandCfg
 
 
@@ -26,12 +28,17 @@ class RecoveryLocomotionCommand(UniformVelocityCommand):
         idx = robot.find_sites(["head"], preserve_order=True)[0][0]
         return robot.data.site_pos_w[:, idx, 2]
 
-    def fallen_mask(self) -> torch.Tensor:
-        """Use the original locomotion fall thresholds: tilt >70 deg or root <0.5m."""
+    def fall_causes(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return orientation and height failures at the original thresholds."""
         gravity_up = -self.robot.data.projected_gravity_b[:, 2]
         tilt = torch.acos(gravity_up.clamp(-1.0, 1.0))
         root_height = self.robot.data.root_link_pos_w[:, 2]
-        return (root_height < 0.5) | (tilt > math.radians(70.0))
+        return tilt > math.radians(70.0), root_height < 0.5
+
+    def fallen_mask(self) -> torch.Tensor:
+        """Use the original locomotion fall thresholds: tilt >70 deg or root <0.5m."""
+        bad_orientation, bad_base_height = self.fall_causes()
+        return bad_orientation | bad_base_height
 
     def reset_phases(self, env_ids: torch.Tensor, phases: torch.Tensor, post_mode: torch.Tensor | None = None):
         self.phase[env_ids] = phases
@@ -41,10 +48,40 @@ class RecoveryLocomotionCommand(UniformVelocityCommand):
             self.post_recovery_mode[env_ids] = post_mode
         self.vel_command_b[env_ids] = 0.0
 
+    def _walkandrun_stage(self) -> VelocityStage | None:
+        stages = self.cfg.walkandrun_velocity_stages
+        if not stages:
+            return None
+        current = stages[0]
+        for stage in stages[1:]:
+            if self.env.common_step_counter >= stage["step"]:
+                current = stage
+        return current
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         super()._resample_command(env_ids)
+        groups = getattr(self.env, "_amp_unified_reset_groups", None)
+        stage = self._walkandrun_stage()
+        if groups is not None and stage is not None:
+            walk_ids = env_ids[groups[env_ids] == 2]
+            if walk_ids.numel():
+                samples = torch.empty(walk_ids.numel(), device=self.device)
+                for component, key in enumerate(("lin_vel_x", "lin_vel_y", "ang_vel_z")):
+                    self.vel_command_b[walk_ids, component] = samples.uniform_(*stage[key])
+                moving = torch.linalg.vector_norm(self.vel_command_b[walk_ids], dim=-1) > 0.1
+                self.vel_command_b[walk_ids] = self.vel_command_b[walk_ids] * moving.unsqueeze(-1)
         zero = (self.phase[env_ids] == self.RECOVER) | (self.phase[env_ids] == self.SETTLE) | (self.phase[env_ids] == self.HOLD) | (self.phase[env_ids] == self.STAND)
         self.vel_command_b[env_ids[zero]] = 0.0
+
+    def _update_command(self) -> None:
+        super()._update_command()
+        groups = getattr(self.env, "_amp_unified_reset_groups", None)
+        stage = self._walkandrun_stage()
+        if groups is None or stage is None:
+            return
+        walk_heading = (groups == 2) & self.is_heading_env & ~self.is_standing_env
+        yaw_range = stage["ang_vel_z"]
+        self.vel_command_b[walk_heading, 2] = self.vel_command_b[walk_heading, 2].clamp(*yaw_range)
 
     def compute(self, dt: float) -> None:
         super().compute(dt)
@@ -101,6 +138,9 @@ class RecoveryLocomotionCommand(UniformVelocityCommand):
         self.timer[ramp_done] = 0.0
 
 
+@dataclass(kw_only=True)
 class RecoveryLocomotionCommandCfg(UniformVelocityCommandCfg):
+    walkandrun_velocity_stages: tuple[VelocityStage, ...] | None = None
+
     def build(self, env):
         return RecoveryLocomotionCommand(self, env)

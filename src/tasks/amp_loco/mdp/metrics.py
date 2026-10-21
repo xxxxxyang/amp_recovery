@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.managers.metrics_manager import MetricsTermCfg
 
+from .rewards import unified_default_pose_stand, unified_stand_pose_active
+
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
@@ -71,6 +73,8 @@ class UnifiedRewardEpisodeLogger:
             "getup": torch.zeros(env.num_envs, dtype=torch.float, device=env.device),
             "walkandrun": torch.zeros(env.num_envs, dtype=torch.float, device=env.device),
         }
+        self._stand_pose_sum = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+        self._stand_pose_steps = torch.zeros_like(self._stand_pose_sum)
 
     def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         command = env.command_manager.get_term("twist")
@@ -84,6 +88,9 @@ class UnifiedRewardEpisodeLogger:
         }
         for name, mask in masks.items():
             self._episode_totals[name] += step_task_reward * mask
+        pose_active = unified_stand_pose_active(env)
+        self._stand_pose_sum += unified_default_pose_stand(env, std=0.3)
+        self._stand_pose_steps += pose_active.float()
         return masks["getup"].float()
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
@@ -98,5 +105,10 @@ class UnifiedRewardEpisodeLogger:
         log = self._env.extras.setdefault("log", {})
         log["Episode_reward_getup"] = self._episode_totals["getup"][ids].mean().item()
         log["Episode_reward_walkandrun"] = self._episode_totals["walkandrun"][ids].mean().item()
+        pose_steps = self._stand_pose_steps[ids].sum()
+        if pose_steps > 0:
+            log["Episode_stand_pose_score"] = (self._stand_pose_sum[ids].sum() / pose_steps).item()
+        self._stand_pose_sum[ids] = 0.0
+        self._stand_pose_steps[ids] = 0.0
         for totals in self._episode_totals.values():
             totals[ids] = 0.0

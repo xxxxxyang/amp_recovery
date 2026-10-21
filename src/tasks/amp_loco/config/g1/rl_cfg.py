@@ -115,10 +115,10 @@ def g1_amp_recovery_loco_runner_cfg() -> RslRlAmpRunnerCfg:
   cfg.logger = "wandb"
   cfg.wandb_project = "amp-recovery-locomotion"
   cfg.amp_motion_files = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_v1"
+    os.path.dirname(__file__), "..", "..", "..", "..", "assets", "motions", "g1", "amp_unified_csv2"
   ))
   cfg.amp_category_ratio = {"Recovery": 0.6, "WalkandRun": 0.4}
-  cfg.amp_source_ratio = {"Recovery": {"subject1": 0.3, "subject2": 0.7}}
+  cfg.amp_source_ratio = {"Recovery": {"subject2": 1.0}}
   return cfg
 
 
