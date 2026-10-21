@@ -103,12 +103,22 @@ class RecoveryLocomotionCommand(UniformVelocityCommand):
             self.vel_command_b[fallen_again] = 0.0
 
         head = self._head_height()
+        root_height = self.robot.data.root_link_pos_w[:, 2]
+        gravity_up = -self.robot.data.projected_gravity_b[:, 2]
+        tilt = torch.acos(gravity_up.clamp(-1.0, 1.0))
         speed = torch.linalg.vector_norm(self.robot.data.root_link_lin_vel_w, dim=-1)
 
         recovering = phase == self.RECOVER
-        stable = (head >= 1.2) & (speed < 0.5)
+        # Require a margin above the locomotion fall limits, then let SETTLE
+        # reward the final standing pose and lower body motion.
+        stable = (
+            (head >= self.cfg.getup_head_height)
+            & (root_height >= self.cfg.getup_root_height)
+            & (tilt <= self.cfg.getup_max_tilt)
+            & (speed < self.cfg.getup_max_speed)
+        )
         self.stand_count = torch.where(recovering & stable, self.stand_count + 1, torch.where(recovering, 0, self.stand_count))
-        success = recovering & (self.stand_count >= 25)
+        success = recovering & (self.stand_count >= self.cfg.getup_hold_steps)
         self.phase[success] = self.SETTLE
         self.timer[success] = 0.0
 
@@ -141,6 +151,11 @@ class RecoveryLocomotionCommand(UniformVelocityCommand):
 @dataclass(kw_only=True)
 class RecoveryLocomotionCommandCfg(UniformVelocityCommandCfg):
     walkandrun_velocity_stages: tuple[VelocityStage, ...] | None = None
+    getup_head_height: float = 1.10
+    getup_root_height: float = 0.60
+    getup_max_tilt: float = math.radians(55.0)
+    getup_max_speed: float = 0.8
+    getup_hold_steps: int = 10
 
     def build(self, env):
         return RecoveryLocomotionCommand(self, env)
