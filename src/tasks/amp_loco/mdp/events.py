@@ -18,6 +18,11 @@ from src.tasks.amp_loco.mdp.terminations import DelayedTerminationManager
 from src.tasks.amp_loco.mdp.unified_command import RecoveryLocomotionCommand
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+_UNIFIED_RECOVERY_CLIP_WEIGHTS = {
+    "subject2_01_supine_straight_getup_high_quality": 0.4,
+    "subject2_02_prone_straight_getup_high_quality": 0.4,
+    "subject2_03_supine_side_getup_high_quality": 0.2,
+}
 
 
 def _initialize_unified_reset_groups(
@@ -71,6 +76,7 @@ class MotionResetManager:
     def __init__(self) -> None:
         self.walk_run_frames: dict[str, dict[str, torch.Tensor]] = {}
         self.recovery_frames: dict[str, dict[str, torch.Tensor]] = {}
+        self.recovery_clip_frames: dict[str, list[tuple[str, dict[str, torch.Tensor]]]] = {}
         self.pose_frame_indices: dict[tuple, torch.Tensor] = {}
         self.default_lie_root_heights: dict[tuple[int, str], float] = {}
 
@@ -108,6 +114,10 @@ class MotionResetManager:
 
         if loader.motion_data_recovery:
             self.recovery_frames[motion_dir] = self._concat_frames(loader.motion_data_recovery)
+            self.recovery_clip_frames[motion_dir] = [
+                (motion["motion_name"], self._concat_frames([motion]))
+                for motion in loader.motion_data_recovery
+            ]
             recovery_count = self.recovery_frames[motion_dir]["root_pos"].shape[0]
             print(f"[MotionResetManager] Loaded {len(loader.motion_data_recovery)} recovery clips, {recovery_count} frames from {recovery_dir}")
 
@@ -214,6 +224,12 @@ class MotionResetManager:
         frames: dict[str, torch.Tensor], count: int
     ) -> torch.Tensor:
         """Sample low, non-upright Recovery frames using unified-task rules."""
+        candidates = MotionResetManager._recovery_candidate_indices(frames)
+        return candidates[torch.randint(len(candidates), (count,), device=candidates.device)]
+
+    @staticmethod
+    def _recovery_candidate_indices(frames: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Get low, non-upright, slow frames, with the existing fallbacks."""
         up_b = torch.zeros_like(frames["root_pos"])
         up_b[:, 2] = 1.0
         torso_up = quat_apply(frames["root_quat"], up_b)[:, 2]
@@ -233,10 +249,7 @@ class MotionResetManager:
             candidates = torch.arange(
                 frames["root_pos"].shape[0], device=frames["root_pos"].device
             )
-        selected = candidates[
-            torch.randint(candidates.numel(), (count,), device=candidates.device)
-        ]
-        return selected
+        return candidates
 
     @staticmethod
     def _remember_reset_frames(
@@ -722,21 +735,47 @@ def reset_unified_recovery_locomotion(
     cmd.reset_phases(env_ids, phases, post_mode)
 
     if recovery_ids.numel():
-        # Keep recovery starts low and non-upright; preserve every annotated
-        # clip frame in the expert library without further file segmentation.
-        up_b = torch.zeros_like(recovery["root_pos"])
-        up_b[:, 2] = 1.0
-        torso_up = quat_apply(recovery["root_quat"], up_b)[:, 2]
-        lin_speed = torch.linalg.vector_norm(recovery["root_lin_vel"], dim=-1)
-        ang_speed = torch.linalg.vector_norm(recovery["root_ang_vel"], dim=-1)
-        candidates = ((recovery["root_pos"][:, 2] < 0.70) & (torso_up.abs() < 0.78) & (lin_speed < 1.0) & (ang_speed < 1.5)).nonzero().flatten()
-        if not candidates.numel():
-            candidates = (recovery["root_pos"][:, 2] < 0.70).nonzero().flatten()
-        if not candidates.numel():
-            candidates = torch.arange(recovery["root_pos"].shape[0], device=env.device)
-        selected = candidates[torch.randint(len(candidates), (len(recovery_ids),), device=env.device)]
-        manager._remember_reset_frames(env, recovery_ids, selected)
-        manager._write_reset_state(env, recovery_ids, recovery, asset_cfg, selected)
+        # Choose a clip first so candidate-frame counts do not bias the clip
+        # proportions; then sample uniformly from that clip's eligible frames.
+        recovery_clips = manager.recovery_clip_frames.get(motion_dir, [])
+        clips_by_name = {name: frames for name, frames in recovery_clips}
+        missing_clips = set(_UNIFIED_RECOVERY_CLIP_WEIGHTS) - set(clips_by_name)
+        if missing_clips:
+            raise RuntimeError(
+                "Unified Recovery reset is missing weighted motion clips: "
+                + ", ".join(sorted(missing_clips))
+            )
+
+        clip_names = list(_UNIFIED_RECOVERY_CLIP_WEIGHTS)
+        clip_probs = torch.tensor(
+            [_UNIFIED_RECOVERY_CLIP_WEIGHTS[name] for name in clip_names],
+            dtype=torch.float32,
+            device=env.device,
+        )
+        clip_choices = torch.multinomial(
+            clip_probs, len(recovery_ids), replacement=True
+        )
+        frame_offset = 0
+        frame_offsets: dict[str, int] = {}
+        for name, clip_frames in recovery_clips:
+            frame_offsets[name] = frame_offset
+            frame_offset += clip_frames["root_pos"].shape[0]
+
+        for clip_index, clip_name in enumerate(clip_names):
+            clip_env_ids = recovery_ids[clip_choices == clip_index]
+            if not clip_env_ids.numel():
+                continue
+            clip_frames = clips_by_name[clip_name]
+            candidates = manager._recovery_candidate_indices(clip_frames)
+            selected = candidates[
+                torch.randint(len(candidates), (len(clip_env_ids),), device=env.device)
+            ]
+            manager._remember_reset_frames(
+                env, clip_env_ids, selected + frame_offsets[clip_name]
+            )
+            manager._write_reset_state(
+                env, clip_env_ids, clip_frames, asset_cfg, selected
+            )
     if walk_ids.numel():
         selected = torch.randint(locomotion["root_pos"].shape[0], (len(walk_ids),), device=env.device)
         manager._remember_reset_frames(env, walk_ids, selected)
